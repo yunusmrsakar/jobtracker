@@ -12,10 +12,10 @@ export default function AuthPage() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) router.replace('/dashboard');
+      if (data.session) router.replace('/dashboard'); // girişliyse dashboard'a
       else setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       if (session) router.replace('/dashboard');
     });
     return () => sub.subscription.unsubscribe();
@@ -30,13 +30,6 @@ export default function AuthPage() {
         supabaseClient={supabase}
         appearance={{ theme: ThemeSupa }}
         providers={[]}
-        view="sign_in"
-        localization={{
-          variables: {
-            sign_in: { email_label: 'E-posta', password_label: 'Şifre', button_label: 'Giriş' },
-            sign_up: { email_label: 'E-posta', password_label: 'Şifre', button_label: 'Kayıt ol' },
-          },
-        }}
       />
     </div>
   );
