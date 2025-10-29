@@ -24,7 +24,28 @@ export default function AuthPage() {
   if (loading) return <div className="p-6">Yükleniyor…</div>;
 
   return (
+    // app/layout.tsx
+export const metadata = {
+  title: 'JobTracker',
+  description: 'Track your job applications',
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <head>
+        {/* Google Search Console site verification */}
+        <meta name="google-site-verification" content="i8ltaCk0PCRKvSgoB0WLjIdepliS3OUdjlDN751pnTM" />
+      </head>
+      <body>{children}
+        {/* footer (yukarıda verdiğim) */}
+      </body>
+    </html>
+  );
+}
+
     <div className="max-w-md mx-auto p-6">
+      
       <h1 className="text-2xl font-semibold mb-4">JobTracker’a hoş geldin</h1>
       <Auth
         supabaseClient={supabase}
@@ -38,6 +59,15 @@ export default function AuthPage() {
           },
         }}
       />
+      <p className="text-xs text-gray-500 mt-6 text-center">
+        By using this app you agree to our{' '}
+        <a href="/privacy" className="underline" target="_blank" rel="noreferrer">
+          Privacy Policy
+        </a>.
+      </p>
+      
     </div>
   );
 }
+
+
