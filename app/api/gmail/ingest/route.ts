@@ -428,7 +428,7 @@ type DBAppRowLite = {
 };
 
 async function findExistingApplicationNormalized(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   userId: string,
   threadId: string | undefined,
   nCompany?: string,
