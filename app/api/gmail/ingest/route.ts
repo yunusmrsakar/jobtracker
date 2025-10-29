@@ -613,6 +613,7 @@ export async function POST(req: NextRequest) {
       let role = rc.role || '';
 
       // subject fallback (AT/BEI + tireli)
+// subject fallback (AT/BEI + tireli)
 if ((!company || company === '(Unknown)') && subject) {
   const ssub = clean(subject);
   const sm =
@@ -621,8 +622,9 @@ if ((!company || company === '(Unknown)') && subject) {
     ssub.match(/(.+?)\s+[–—-]\s+(.+)$/);
 
   if (sm) {
-    role    = role    || cleanRole(clean(sm[1])) || ''; // <-- ek: || ''
-    company = company || clean(sm[2])            || ''; // güvenli tarafta kal
+    const [, mRole, mCompany] = sm as RegExpMatchArray; // grupları kesinleştir
+    role    = role    || cleanRole(clean(mRole ?? '')) || '';
+    company = company || clean(mCompany ?? '')          || '';
   }
 }
 
