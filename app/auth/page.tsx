@@ -26,15 +26,7 @@ export default function AuthPage() {
   return (
     
     <div className="max-w-md mx-auto p-6">
-       <html lang="en">
-      <head>
-        {/* Google Search Console site verification */}
-        <meta name="google-site-verification" content="i8ltaCk0PCRKvSgoB0WLjIdepliS3OUdjlDN751pnTM" />
-      </head>
-      <body>{children}
-        {/* footer (yukarıda verdiğim) */}
-      </body>
-    </html>
+      
       <h1 className="text-2xl font-semibold mb-4">JobTracker’a hoş geldin</h1>
       <Auth
         supabaseClient={supabase}

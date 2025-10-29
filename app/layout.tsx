@@ -7,15 +7,36 @@ export const metadata: Metadata = {
   description: 'Track your job applications in one place.',
 };
 
-// app/layout.tsx
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="tr" className="h-full">
+      <head>
+        {/* Google Search Console doğrulama etiketi */}
+        <meta
+          name="google-site-verification"
+          content="i8ltaCk0PCRKvSgoB0WLjIdepliS3OUdjlDN751pnTM"
+        />
+      </head>
+
       {/* Grammarly vb. yüzünden oluşan attribute farklarını görmezden gel */}
       <body className="min-h-screen bg-gray-50 text-gray-900" suppressHydrationWarning>
-        {children}
+        <div className="flex flex-col min-h-screen">
+          <main className="flex-1">{children}</main>
+
+          {/* Footer */}
+          <footer className="text-center text-xs text-gray-500 mt-12 mb-4">
+            © {new Date().getFullYear()} JobTracker •{' '}
+            <a
+              href="/privacy"
+              className="underline"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Privacy Policy
+            </a>
+          </footer>
+        </div>
       </body>
     </html>
   );
 }
-

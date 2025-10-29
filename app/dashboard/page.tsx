@@ -410,6 +410,7 @@ export default function Dashboard() {
                 {apps.length === 0 && (
                   <tr><td className="p-2" colSpan={9}>No records yet.</td></tr>
                 )}
+                
               </tbody>
             </table>
           </div>

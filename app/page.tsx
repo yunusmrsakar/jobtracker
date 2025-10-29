@@ -24,26 +24,7 @@ export default function AuthPage() {
   if (loading) return <div className="p-6">Yükleniyor…</div>;
 
   return (
-    // app/layout.tsx
-export const metadata = {
-  title: 'JobTracker',
-  description: 'Track your job applications',
-};
-
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en">
-      <head>
-        {/* Google Search Console site verification */}
-        <meta name="google-site-verification" content="i8ltaCk0PCRKvSgoB0WLjIdepliS3OUdjlDN751pnTM" />
-      </head>
-      <body>{children}
-        {/* footer (yukarıda verdiğim) */}
-      </body>
-    </html>
-  );
-}
-
+    
     <div className="max-w-md mx-auto p-6">
       
       <h1 className="text-2xl font-semibold mb-4">JobTracker’a hoş geldin</h1>
