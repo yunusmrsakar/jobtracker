@@ -94,16 +94,18 @@ const findJobUrlLinkedIn = (t: string) => {
 };
 
 // Role sonundaki (IMAC), (m/w/d), (f/m/x) vb’yi temizle
-function cleanRole(role?: string) {
-  if (!role) return role;
+function cleanRole(role?: string): string {
+  if (!role) return '';                 // <-- her zaman string döndür
   let r = role;
   r = r.replace(/\s*\((?:[A-Z]{2,8}|[A-Za-z\/\-]{2,12})\)\s*$/g, '');
   r = r.replace(/\s*\((?:m\/w\/d|f\/m\/x)\)\s*$/ig, '');
   return r.trim();
 }
 function normalizeRole(role?: string) {
-  return role ? cleanRole(clean(role)) : undefined;
+  const rr = cleanRole(clean(role));    // cleanRole artık string döndürür
+  return rr || undefined;               // normalizeRole yine undefined döndürebilir
 }
+
 
 /* ===== LinkedIn body-first extraction ===== */
 type RC = { role?: string; company?: string; jobUrl?: string };
@@ -611,20 +613,19 @@ export async function POST(req: NextRequest) {
       let role = rc.role || '';
 
       // subject fallback (AT/BEI + tireli)
-      if ((!company || company === '(Unknown)') && subject) {
-        const ssub = clean(subject);
-        const sm =
-          ssub.match(/(.+?)\s+at\s+(.+)$/i) ||
-          ssub.match(/(.+?)\s+bei\s+(.+)$/i) ||
-          ssub.match(/(.+?)\s+[–—-]\s+(.+)$/);
-        if (sm) { role = role || cleanRole(clean(sm[1])); company = company || clean(sm[2]); }
-      }
+if ((!company || company === '(Unknown)') && subject) {
+  const ssub = clean(subject);
+  const sm =
+    ssub.match(/(.+?)\s+at\s+(.+)$/i) ||
+    ssub.match(/(.+?)\s+bei\s+(.+)$/i) ||
+    ssub.match(/(.+?)\s+[–—-]\s+(.+)$/);
 
-      // THANK-YOU kalıplarından şirket
-      if (!company) {
-        const cThanks = companyFromThanks(body);
-        if (cThanks) company = cThanks;
-      }
+  if (sm) {
+    role    = role    || cleanRole(clean(sm[1])) || ''; // <-- ek: || ''
+    company = company || clean(sm[2])            || ''; // güvenli tarafta kal
+  }
+}
+
 
       // Hâlâ company yoksa gönderen domaininden türet
       if (!company) {
