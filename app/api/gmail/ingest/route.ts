@@ -50,6 +50,7 @@ function extractBodyText(payload: any): string {
     if (!part) return;
     const mime = part.mimeType || '';
     const data = part.body?.data;
+
     if (data && (mime.startsWith('text/plain') || mime.startsWith('text/html'))) {
       let raw = b64urlToUtf8(data);
       if (/=0A|=3D|=\r?\n/.test(raw)) raw = decodeQP(raw);
@@ -74,10 +75,25 @@ const emailDomain = (fromLike: string) => {
   return (m?.[1] || '').toLowerCase();
 };
 
-// Temizlik (genel)
+// ‘·’ ayırıcısını KORU (Company · Location)
 const clean = (s?: string) =>
   (s || '').replace(/\s+/g, ' ').replace(/[|•▶︎▸]+/g, ' ').trim();
 
+const splitLines = (text: string) =>
+  text.replace(/\r/g, '').split('\n').map((l) => clean(l)).filter(Boolean);
+
+const getAfterLabel = (text: string, labels: string[]) => {
+  const re = new RegExp(`(?:${labels.join('|')})\\s*[:\\-]\\s*([^\\n]+)`, 'i');
+  const m = text.match(re);
+  return m ? clean(m[1]) : undefined;
+};
+
+const findJobUrlLinkedIn = (t: string) => {
+  const m = t.match(/https?:\/\/[^\s"']*linkedin\.com\/jobs\/view\/[^\s"')]+/i);
+  return m ? m[0] : null;
+};
+
+// Role sonundaki (IMAC), (m/w/d), (f/m/x) vb’yi temizle
 function cleanRole(role?: string) {
   if (!role) return role;
   let r = role;
@@ -89,17 +105,18 @@ function normalizeRole(role?: string) {
   return role ? cleanRole(clean(role)) : undefined;
 }
 
-const findJobUrlLinkedIn = (t: string) => {
-  const m = t.match(/https?:\/\/[^\s"']*linkedin\.com\/jobs\/view\/[^\s"')]+/i);
-  return m ? m[0] : null;
+/* ===== LinkedIn body-first extraction ===== */
+type RC = { role?: string; company?: string; jobUrl?: string };
+
+function looksCompanyLike(line: string) {
+  return /^(?:[A-Z][\w&'().-]+(?:\s+[A-Z][\w&'().-]+){0,6})$/.test(line);
 }
 
-/* ===== LinkedIn body-first extraction (rol & url; company artık subject@sender) ===== */
-type RC = { role?: string; jobUrl?: string };
-function pickRoleCompanyByCard(linesArr: string[]): { role?: string } {
+function pickRoleCompanyByCard(linesArr: string[]): { role?: string; company?: string } {
   const lines = linesArr.slice();
   const idxApplied = lines.findIndex((x) => /^applied on\b/i.test(x) || /^applied\b/i.test(x));
   if (idxApplied === -1) return {};
+
   let roleIdx = -1;
   for (let i = Math.max(0, idxApplied - 5); i < idxApplied; i++) {
     const a = lines[i];
@@ -111,37 +128,97 @@ function pickRoleCompanyByCard(linesArr: string[]): { role?: string } {
     if (a.split(' ').length <= 8 && /[A-Za-z]/.test(a)) roleIdx = i;
   }
   if (roleIdx === -1) return {};
-  return { role: cleanRole(lines[roleIdx]) };
+  const role = cleanRole(lines[roleIdx]);
+
+  const LOC_WORDS = [
+    'remote','europe','european union','germany','deutschland','türkiye','turkey',
+    'france','italy','spain','netherlands','poland','austria','switzerland',
+    'united kingdom','uk','berlin','munich','hamburg','düsseldorf','köln','essen','neuss','cologne'
+  ];
+
+  for (let j = roleIdx + 1; j <= Math.min(lines.length - 1, roleIdx + 4); j++) {
+    const b = lines[j];
+    if (!b) continue;
+    if (/view job/i.test(b)) continue;
+
+    if (b.includes('·')) return { role, company: b.split('·')[0].trim() };
+
+    const reLoc = new RegExp(`\\b(${LOC_WORDS.join('|')})\\b`, 'i');
+    const m = b.match(reLoc);
+    if (m && typeof m.index === 'number') {
+      const name = b.slice(0, m.index).replace(/[ ,\-–—]+$/,'').trim();
+      if (name) return { role, company: name };
+    }
+
+    const mAt = b.match(/^(?:at|bei)\s+([A-Z][\w&\-'(). ]{2,})/i);
+    if (mAt) return { role, company: clean(mAt[1]) };
+
+    if (looksCompanyLike(b)) return { role, company: b };
+  }
+  return { role };
 }
 
-function extractRoleFromBody(subject: string, body: string, source: string): RC {
+function extractRoleCompanyFromBody(subject: string, body: string, source: string): RC {
   const bodyText = clean(body);
-  const lines = bodyText.replace(/\r/g, '').split('\n').map(clean).filter(Boolean);
+  const lines = splitLines(body);
+
+  let companyFromHeader: string | undefined;
+  const mh =
+    bodyText.match(/\byour update from\s+([A-Z][A-Za-z0-9&().' -]{2,})\b/i) ||
+    bodyText.match(/\byour application was sent to\s+([A-Z][A-Za-z0-9&().' -]{2,})\b/i);
+  if (mh) companyFromHeader = clean(mh[1]);
+
+  const roleLabel = getAfterLabel(`${body}\n${subject}`, [
+    'job\\s*title','job\\s*role','position','role','title',
+    'stelle','stellenbezeichnung','positionstitel'
+  ]);
+  const companyLabel = getAfterLabel(`${body}\n${subject}`, [
+    'company','unternehmen','firma','employer'
+  ]);
 
   const fromCard = pickRoleCompanyByCard(lines);
 
-  // cümle bazlı rol (company'i artık subject/sender'dan kuruyoruz)
+  let roleFromSent: string | undefined;
+  let companyFromSent: string | undefined;
   const s3 =
-    bodyText.match(/\bfor the (?:position|role) of\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+at\s+[A-Za-z0-9().,'&\-\/ ]{2,}/i) ||
-    bodyText.match(/\bfor\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+at\s+[A-Za-z0-9().,'&\-\/ ]{2,}/i) ||
-    bodyText.match(/\bfür die position\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+bei\s+[A-Za-z0-9().,'&\-\/ ]{2,}/i) ||
-    bodyText.match(/\bfür\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+bei\s+[A-Za-z0-9().,'&\-\/ ]{2,}/i);
+    bodyText.match(/\bfor the (?:position|role) of\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+at\s+([A-Za-z0-9().,'&\-\/ ]{2,})/i) ||
+    bodyText.match(/\bfor\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+at\s+([A-Za-z0-9().,'&\-\/ ]{2,})/i) ||
+    bodyText.match(/\bfür die position\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+bei\s+([A-Za-z0-9().,'&\-\/ ]{2,})/i) ||
+    bodyText.match(/\bfür\s+([A-Za-z0-9().,'&\-\/ ]{2,})\s+bei\s+([A-Za-z0-9().,'&\-\/ ]{2,})\b/i);
+  if (s3) { roleFromSent = clean(s3[1]); companyFromSent = clean(s3[2]); }
 
-  const roleFromSent = s3 ? cleanRole(clean(s3[1])) : undefined;
+  let companyFromAt: string | undefined;
+  const atM = bodyText.match(/\bat\s+([A-Z][A-Za-z0-9&\-()'.\s]{2,})\s*(?:[.,]|$)/i);
+  if (atM) companyFromAt = clean(atM[1]);
+  const beiM = bodyText.match(/\bbei\s+([A-Z][A-Za-z0-9&\-()'.\s]{2,})\s*(?:[.,]|$)/i);
+  if (beiM) companyFromAt = clean(beiM[1]) || companyFromAt;
 
-  // subject bazlı rol (e.g. "Product Manager — Company")
+  // subject fallback (AT/BEI + TİRELİ)
+  let roleFromSubj: string | undefined, companyFromSubj: string | undefined;
   const subj = clean(subject);
-  let roleFromSubj: string | undefined;
   const sm =
     subj.match(/(.+?)\s+at\s+(.+)$/i) ||
     subj.match(/(.+?)\s+bei\s+(.+)$/i) ||
     subj.match(/(.+?)\s+[–—-]\s+(.+)$/);
-  if (sm) roleFromSubj = cleanRole(clean(sm[1]));
+  if (sm) { roleFromSubj = cleanRole(clean(sm[1])); companyFromSubj = clean(sm[2]); }
 
   const jobUrl = source === 'LinkedIn' ? findJobUrlLinkedIn(body) : null;
-  const role = cleanRole(fromCard.role || roleFromSent || roleFromSubj || undefined);
 
-  return { role: role || undefined, jobUrl: jobUrl || undefined };
+  let company =
+    companyLabel || fromCard.company || companyFromSent || companyFromHeader || companyFromAt || companyFromSubj || undefined;
+
+  let role =
+    cleanRole(roleLabel) || cleanRole(fromCard.role) || cleanRole(roleFromSent) || cleanRole(roleFromSubj) || undefined;
+
+  if (company) company = company.replace(/\s*·\s*.*$/, '').replace(/\s*view job.*$/i,'').trim();
+
+  role = role ? clean(role) : undefined;
+  company = company ? clean(company).replace(/^linkedin$/i, '') : undefined;
+
+  if (company && company.length > 120) company = undefined;
+  if (role && role.length > 140) role = undefined;
+
+  return { role, company, jobUrl: jobUrl || undefined };
 }
 
 /* ===== kaynak & kalıplar ===== */
@@ -188,6 +265,9 @@ const EXCLUDE_SERVICE_KEYS = [
   'supabase auth'
 ];
 
+// Randevu / takvim
+const EXCLUDE_APPOINTMENT_KEYS: string[] = [];
+
 // Sağlık/terapi (Hiwellapp vb.)
 const EXCLUDE_HEALTH_APPT_KEYS = [
   'hiwellapp','therapy','therapist','psychologist','psychologie','psikolog','psikoloji',
@@ -212,33 +292,138 @@ const EXCLUDE_NON_APPLICATION_SENDER_DOMAINS = [
   'hiwellapp.com','x.com','jobleads.com'
 ];
 
-const STRONG_POSITIVE = [
-  'application received','we received your application','thank you for applying','your application to',
-  'ihre bewerbung','bewerbung eingegangen','wir haben deine bewerbung erhalten','bestätigung ihrer bewerbung'
-];
-const MEDIUM_POSITIVE = ['application','applied','bewerbung','postulation','candidature','confirm your email','confirm your mail'];
-const REJECTION_KEYS = [
-  'we will not move forward','not moving forward','unfortunately we will not','no longer under consideration',
-  'regret to inform you','decided not to move forward','will not proceed','leider','absage','nicht weiter',
-  'olumsuz değerlendirildi','üzgünüz'
-];
-const INTERVIEW_KEYS = [
-  'interview','phone screen','technical interview','onsite','gespräch','vorstellungsgespräch','telefoninterview',
-  'mülakat','görüşme','schedule a call','book a call','calendly'
-];
-
 type Status = 'Applied' | 'Phone Screen' | 'Interview' | 'Offer' | 'Rejected' | 'Withdrawn';
 const STATUS_WEIGHT: Record<Status, number> = { Applied:1, 'Phone Screen':2, Interview:3, Offer:4, Rejected:5, Withdrawn:6 };
 const promote = (prev?: Status, incoming?: Status): Status =>
   (!prev ? (incoming || 'Applied') : (!incoming ? prev : (STATUS_WEIGHT[incoming] >= STATUS_WEIGHT[prev] ? incoming : prev)));
 
-/* ===== eşleştirme (normalized) ===== */
+/* ===== company normalization & sender + THANKS fallback ===== */
+const CITY_WORDS = [
+  'remote','berlin','munich','münchen','hamburg','köln','cologne','düsseldorf','essen','neuss',
+  'germany','deutschland','europe','european union','eu','emea','france','italy','spain','poland',
+  'switzerland','austria','netherlands','uk','united kingdom','turkey','türkiye','hybrid'
+];
+
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeCompany(company?: string, role?: string) {
+  if (!company) return undefined;
+  let s = ' ' + company + ' ';
+
+  // role kelimelerini ayıkla
+  if (role) {
+    const tokens = role.split(/\s+/).filter(Boolean);
+    if (tokens.length) {
+      const re = new RegExp(`\\b(${tokens.map(escapeRegExp).join('|')})\\b`, 'ig');
+      s = s.replace(re, ' ');
+    }
+  }
+
+  // kuyruklar
+  s = s.replace(/\s*[,·|]\s*(view job.*)$/i, ' ');
+  s = s.replace(/\s*view job.*$/i, ' ');
+
+  // şehir/ülke/remote’ı sonda buda
+  const locRe = new RegExp(`(?:[,\\s\\-–—]+(?:${CITY_WORDS.map(escapeRegExp).join('|')}))(?:[\\s\\w()./,-]*)$`, 'i');
+  s = s.replace(locRe, ' ');
+
+  // tekrar eden ardışık kelimeleri tekilleştir
+  const words = s.trim().split(/\s+/);
+  const dedup: string[] = [];
+  for (const w of words) {
+    if (dedup.length === 0 || dedup[dedup.length - 1].toLowerCase() !== w.toLowerCase()) dedup.push(w);
+  }
+  s = dedup.join(' ');
+
+  if (s.length > 120) s = s.slice(0, 120).trim();
+  return s || undefined;
+}
+
+function companyFromSender(from: string): string | undefined {
+  const m = from.match(/@([^>\s]+)>?$/) || from.match(/@([^\s>]+)/);
+  const host = (m?.[1] || '').toLowerCase();
+  if (!host) return;
+
+  const ignore = [
+    'workablemail.com','workable.com','greenhouse.io','mail.greenhouse.io','lever.co',
+    'personio.de','personio.com','smartrecruiters.com','recruitee.com','teamtailor.com',
+    'icims.com','oraclecloud.com','myworkday.com','workday.com','bamboohr.com'
+  ];
+  if (ignore.some(d => host.endsWith(d))) return;
+
+  const parts = host.split('.');
+  const sld = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+  if (!sld) return;
+
+  const pretty = sld.replace(/(^\w)/, c => c.toUpperCase());
+  return pretty.replace(/([a-z])k$/i,'$1K'); // motork → MotorK
+}
+
+/* -------- THANK-YOU pattern → company (EN/DE/TR genişletilmiş) -------- */
+function companyFromThanks(text: string): string | undefined {
+  const t = (text || '').replace(/\s+/g, ' ');
+
+  // İngilizce güçlü varyantlar
+  const enPatterns: RegExp[] = [
+    /\bthank you for your interest in joining\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bthank you for your interest in\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bthanks for your interest in\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bwe appreciate your interest in\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bthank you for your application to\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bthanks for applying to\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bthank you for applying to\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bthank you for your interest at\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+  ];
+
+  for (const re of enPatterns) {
+    const m = t.match(re);
+    if (m) return clean(m[1]);
+  }
+
+  // Almanca
+  const dePatterns: RegExp[] = [
+    /\bvielen dank (?:für|fuer) (?:ihr|dein)e?n?\s+interesse an\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bvielen dank (?:für|fuer) (?:ihr|dein)e?n?\s+interesse an einer tätigkeit bei\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bvielen dank (?:für|fuer) (?:ihr|dein)e?n?\s+bewerbung bei\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+    /\bwir danken (?:ihnen|dir) (?:für|fuer) (?:ihr|dein)e?n?\s+interesse an\s+([A-Z][A-Za-z0-9&().,'\- ]{2,})\b/i,
+  ];
+  for (const re of dePatterns) {
+    const m = t.match(re);
+    if (m) return clean(m[1]);
+  }
+
+  // Türkçe
+  const trPatterns: RegExp[] = [
+    /\b(?:firmamıza|şirketimize|ekibimize)?\s*ilginiz için teşekkür(?:ler| ederiz)\s*,?\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜ0-9&().,'\- ]{2,})\b/i,
+    /\bbaşvurunuz için teşekkür(?:ler| ederiz)\s*,?\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜ0-9&().,'\- ]{2,})\b/i,
+    /\b(?:[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜ0-9&().,'\- ]{2,})\s*ailesine ilginiz için teşekkür(?:ler| ederiz)\b/i,
+  ];
+  for (const re of trPatterns) {
+    const m = t.match(re);
+    if (m) return clean(m[1]);
+  }
+
+  return undefined;
+}
+
+/* ===== akıllı eşleştirme (normalized) ===== */
 function subjectRoot(s: string) {
   const x = s.replace(/\s+\(.+?\)\s*$/,'');
   return x.split(' - ')[0].split(' — ')[0].split(' – ')[0].trim();
 }
+
 function escapeSQLLiteral(s: string) { return `'${s.replace(/'/g, "''")}'`; }
 function escapeSQLIdent(s: string) { return s.replace(/"/g, '""'); }
+
+type DBAppRowLite = {
+  id: number | string;
+  status: Status;
+  company?: string | null;
+  role?: string | null;
+  created_at?: string | null;
+};
 
 async function findExistingApplicationNormalized(
   supabase: ReturnType<typeof createClient>,
@@ -248,6 +433,7 @@ async function findExistingApplicationNormalized(
   nRole?: string,
   subject?: string
 ) {
+  // 1) thread_id
   if (threadId) {
     const { data } = await supabase
       .from('job_applications')
@@ -255,11 +441,12 @@ async function findExistingApplicationNormalized(
       .eq('user_id', userId)
       .eq('thread_id', threadId)
       .limit(1);
-    if (data && data[0]) return data[0];
+    if (data && (data as any[])[0]) return (data as any[])[0] as DBAppRowLite;
   }
 
   const since = new Date(Date.now() - 60*24*60*60*1000).toISOString();
 
+  // 2) company/role yakın eşleşme
   if (nCompany) {
     const { data } = await supabase
       .from('job_applications')
@@ -273,8 +460,9 @@ async function findExistingApplicationNormalized(
       .order('created_at', { ascending: false })
       .limit(10);
 
-    if (data && data.length) {
-      const cand = data.find(r => {
+    const rows = (data ?? []) as DBAppRowLite[]; // <<< TİP DÜZELTME
+    if (rows.length) {
+      const cand = rows.find(r => {
         const c = (r.company || '').toLowerCase();
         const rc = (nCompany || '').toLowerCase();
         const roleDb = (r.role || '').toLowerCase();
@@ -287,6 +475,7 @@ async function findExistingApplicationNormalized(
     }
   }
 
+  // 3) subject kökü ile role eşleşmesi
   const root = subject ? subjectRoot(subject) : undefined;
   if (root && !nCompany) {
     const { data } = await supabase
@@ -297,7 +486,9 @@ async function findExistingApplicationNormalized(
       .ilike('role', `%${root}%`)
       .order('created_at', { ascending: false })
       .limit(1);
-    if (data && data[0]) return data[0];
+
+    const rows = (data ?? []) as DBAppRowLite[]; // <<< TİP DÜZELTME
+    if (rows[0]) return rows[0];
   }
 
   return null;
@@ -317,11 +508,7 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ ok:false, error:'not_auth' }, { status:401 });
 
-    const { data: tokenRow } = await supabase
-      .from('gmail_tokens')
-      .select('*')
-      .eq('user_id', user.id)
-      .maybeSingle();
+    const { data: tokenRow } = await supabase.from('gmail_tokens').select('*').eq('user_id', user.id).maybeSingle();
     if (!tokenRow) return NextResponse.json({ ok:false, error:'no_gmail_link' }, { status:400 });
 
     const oauth2 = new google.auth.OAuth2(
@@ -352,9 +539,7 @@ export async function POST(req: NextRequest) {
       pageCount++;
       if (!pageToken) break;
     }
-    if (!ids.length) {
-      return NextResponse.json({ ok:true, imported:0, scanned:0, skippedBy:{ no_ids_from_gmail:1 }, usedQuery:query });
-    }
+    if (!ids.length) return NextResponse.json({ ok:true, imported:0, scanned:0, skippedBy:{ no_ids_from_gmail:1 }, usedQuery:query });
 
     let imported = 0;
     const skippedBy: Record<string, number> = {};
@@ -371,29 +556,43 @@ export async function POST(req: NextRequest) {
       const replyTo = getH('Reply-To') || '';
       const dateStr = getH('Date') || '';
       const threadId = msg.data.threadId || '';
-      const gmailLink = `https://mail.google.com/mail/#all/${msg.data.id}`;
+      const gmailLinkId = msg.data.id || ''; // gmail_id
+      const gmailLink = gmailLinkId ? `https://mail.google.com/mail/u/0/#all/${gmailLinkId}` : null;
 
       const body = extractBodyText(msg.data.payload);
       const txtAll = toHay(subject, body, from, returnPath, replyTo);
 
       const fromDom = emailDomain(from);
 
-      // Erken dışlama
+      // ——— erken dışlama: domain bazlı ———
       if (fromDom && EXCLUDE_NON_APPLICATION_SENDER_DOMAINS.some(d => fromDom.endsWith(d))) {
-        skip('non_application_domain'); continue;
+        skip('non_application_domain');
+        continue;
       }
+
+      // ——— içerik bazlı dışlama ———
       if (hasAny(txtAll, EXCLUDE_HEALTH_APPT_KEYS))   { skip('health_or_therapy_notice'); continue; }
+      if (hasAny(txtAll, EXCLUDE_APPOINTMENT_KEYS))   { skip('appointment_notice');       continue; }
       if (hasAny(txtAll, EXCLUDE_NEWSLETTER_KEYS))    { skip('newsletter');               continue; }
       if (hasAny(txtAll, EXCLUDE_SERVICE_KEYS))       { skip('service_notice');           continue; }
       if (hasAny(txtAll, EXCLUDE_ALERT_KEYS) || hasAny(txtAll, EXCLUDE_JOB_ADVERT_KEYS)) {
-        skip('job_advert_or_alert'); continue;
+        skip('job_advert_or_alert');
+        continue;
       }
 
-      // Status sinyali
-      const isRejected  = hasAny(txtAll, REJECTION_KEYS);
-      const isInterview = hasAny(txtAll, INTERVIEW_KEYS);
-      const strong      = hasAny(txtAll, STRONG_POSITIVE);
-      const medium      = hasAny(txtAll, MEDIUM_POSITIVE);
+      const isRejected  = hasAny(txtAll, ['we will not move forward','not moving forward','unfortunately we will not','no longer under consideration',
+        'regret to inform you','decided not to move forward','will not proceed','leider','absage','nicht weiter',
+        'olumsuz değerlendirildi','üzgünüz'
+      ]);
+      const isInterview = hasAny(txtAll, [
+        'interview','phone screen','technical interview','onsite','gespräch','vorstellungsgespräch','telefoninterview',
+        'mülakat','görüşme','schedule a call','book a call','calendly'
+      ]);
+      const strong      = hasAny(txtAll, [
+        'application received','we received your application','thank you for applying','your application to',
+        'ihre bewerbung','bewerbung eingegangen','wir haben deine bewerbung erhalten','bestätigung ihrer bewerbung'
+      ]);
+      const medium      = hasAny(txtAll, ['application','applied','bewerbung','postulation','candidature','confirm your email','confirm your mail']);
 
       let status: Status | undefined;
       if (isRejected) status = 'Rejected';
@@ -401,40 +600,52 @@ export async function POST(req: NextRequest) {
       else if (strong || medium) status = 'Applied';
 
       const senderBlob = `${from} ${returnPath} ${replyTo}`.toLowerCase();
-      let source = Object.entries(SOURCE_BY_DOMAIN).find(([d]) => fromDom.endsWith(d))?.[1] ?? 'Other';
-      const isKnownATS = Object.keys(SOURCE_BY_DOMAIN).some(dom => senderBlob.includes(dom) || (fromDom && fromDom.endsWith(dom)));
+      let source = fromDom ? (Object.entries(SOURCE_BY_DOMAIN).find(([d]) => fromDom.endsWith(d))?.[1] ?? 'Other') : 'Other';
+      const isKnownATS = Object.keys(SOURCE_BY_DOMAIN).some(dom => senderBlob.includes(dom) || (fromDom ? fromDom.endsWith(dom) : false));
       if (!status && isKnownATS) status = 'Applied';
       if (!status) { skip('no_positive_signal'); continue; }
 
-      // --- Company = Subject at Sender DisplayName ---
-      const dispNameRaw = (() => {
-        const m = (from.match(/^"?(.*?)"?\s*<[^>]+>/) || from.match(/^([^<@]+)@/));
-        const dn = m ? m[1].trim() : '';
-        return dn || '';
-      })();
-      const companyField = (() => {
-        const subj = (subject || '').trim();
-        const dn = (dispNameRaw || '').trim();
-        if (subj && dn) return `${subj} at ${dn}`;
-        return subj || dn || '(Unknown)';
-      })();
+      // BODY-first çıkarım
+      const rc = extractRoleCompanyFromBody(subject, body, source);
+      let company = rc.company || '';
+      let role = rc.role || '';
 
-      // --- Role & jobUrl (gövde ağırlıklı) ---
-      const rc = extractRoleFromBody(subject, body, source);
-      const nRole = normalizeRole(rc.role) || '(Unknown)';
+      // subject fallback (AT/BEI + tireli)
+      if ((!company || company === '(Unknown)') && subject) {
+        const ssub = clean(subject);
+        const sm =
+          ssub.match(/(.+?)\s+at\s+(.+)$/i) ||
+          ssub.match(/(.+?)\s+bei\s+(.+)$/i) ||
+          ssub.match(/(.+?)\s+[–—-]\s+(.+)$/);
+        if (sm) { role = role || cleanRole(clean(sm[1])); company = company || clean(sm[2]); }
+      }
+
+      // THANK-YOU kalıplarından şirket
+      if (!company) {
+        const cThanks = companyFromThanks(body);
+        if (cThanks) company = cThanks;
+      }
+
+      // Hâlâ company yoksa gönderen domaininden türet
+      if (!company) {
+        const fromCompany = companyFromSender(from);
+        if (fromCompany) company = fromCompany;
+      }
+
+      // normalize
+      const nRole = normalizeRole(role) || '(Unknown)';
+      const nCompany = normalizeCompany(company, role) || '(Unknown)';
+
       const jobUrl = rc.jobUrl || null;
-
       const apply_date = dateStr ? new Date(dateStr).toISOString().slice(0,10) : null;
 
-      // Eşleştirme & Upsert
+      // ----- eşleştirme (normalized) & upsert -----
       let applicationId: number | null = null;
       let prevStatus: Status | undefined;
 
       const existing = await findExistingApplicationNormalized(
-        supabase, user.id, threadId,
-        companyField !== '(Unknown)' ? companyField : undefined,
-        nRole !== '(Unknown)' ? nRole : undefined,
-        subject
+        supabase, user.id, threadId, nCompany !== '(Unknown)' ? nCompany : undefined,
+        nRole !== '(Unknown)' ? nRole : undefined, subject
       );
       if (existing) {
         applicationId = (existing as any).id as number;
@@ -446,9 +657,9 @@ export async function POST(req: NextRequest) {
       if (applicationId == null) {
         const ins = await supabase.from('job_applications').insert({
           user_id: user.id,
-          gmail_id: msg.data.id,
+          gmail_id: gmailLinkId || null,   // <<<< gmail_id kayıt
           thread_id: threadId,
-          company: companyField,            // <— Subject at Sender
+          company: nCompany,
           role: nRole,
           source,
           status: finalStatus,
@@ -457,38 +668,29 @@ export async function POST(req: NextRequest) {
           job_url: jobUrl
         }).select('id').single();
         if (ins.error) { skip(`insert_error_${ins.error.code || 'unknown'}`); continue; }
-        applicationId = ins.data.id as number; imported++;
+        applicationId = (ins.data as any).id as number; imported++;
       } else {
-        const updPayload: any = {
-          status: finalStatus,
-          apply_date,
-          updated_at: new Date().toISOString(),
-        };
-        if (companyField && companyField !== '(Unknown)') updPayload.company = companyField;
+        const updPayload: any = { status: finalStatus, apply_date, updated_at: new Date().toISOString() };
+        if (gmailLinkId) updPayload.gmail_id = gmailLinkId;     // <<<< mevcut kayda gmail_id yaz
+        if (nCompany && nCompany !== '(Unknown)' && !/^linkedin$/i.test(nCompany)) updPayload.company = nCompany;
         if (nRole && nRole !== '(Unknown)') updPayload.role = nRole;
         if (jobUrl) updPayload.job_url = jobUrl;
-
         const upd = await supabase.from('job_applications').update(updPayload).eq('id', applicationId);
         if (upd.error) { skip(`update_error_${upd.error.code || 'unknown'}`); continue; }
       }
 
+      // e-posta log tablosu (opsiyonel)
       await supabase.from('job_application_emails').insert({
         user_id: user.id,
         application_id: applicationId!,
-        gmail_id: msg.data.id,
+        gmail_id: gmailLinkId || null,
         subject,
         sent_at: dateStr ? new Date(dateStr).toISOString() : null,
         gmail_link: gmailLink
       });
     }
 
-    return NextResponse.json({
-      ok:true,
-      imported,
-      scanned: Math.min(ids.length, MAX_TO_FETCH),
-      skippedBy,
-      usedQuery: query
-    });
+    return NextResponse.json({ ok:true, imported, scanned: Math.min(ids.length, MAX_TO_FETCH), skippedBy, usedQuery: query });
   } catch (e: any) {
     return NextResponse.json({ ok:false, error: e?.message || String(e) }, { status:500 });
   }
