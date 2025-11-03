@@ -12,10 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="tr" className="h-full">
       <head>
         {/* Google Search Console doğrulama etiketi */}
-        <meta
-          name="google-site-verification"
-          content="i8ltaCk0PCRKvSgoB0WLjIdepliS3OUdjlDN751pnTM"
-        />
+        <meta name="google-site-verification" content="TSPGMTTBZ5UHgd7Y36BCuOSn8qr9CnhCPe0CfApIGaI" />
       </head>
 
       {/* Grammarly vb. yüzünden oluşan attribute farklarını görmezden gel */}
